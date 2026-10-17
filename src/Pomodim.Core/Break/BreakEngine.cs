@@ -127,6 +127,20 @@ public sealed class BreakEngine
         _deadline = Clock.UtcNow + _heldRemaining;
     }
 
+    /// <summary>
+    /// Starts a break immediately, for the person clicking "Break now". A locked session is
+    /// left alone: locked means never dim, and that includes a break that was asked for.
+    /// </summary>
+    public void ForceBreak()
+    {
+        if (_state == SessionState.Locked)
+            return;
+        _phase = BreakPhase.Break;
+        _state = SessionState.Break;
+        _heldRemaining = TimeSpan.Zero;
+        _deadline = Clock.UtcNow + Protocol.BreakDuration;
+    }
+
     private TimeSpan RemainingNow()
     {
         var remaining = _deadline - Clock.UtcNow;
