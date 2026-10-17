@@ -47,6 +47,12 @@ public sealed class App : Application
 
         BuildTray();
 
+        // Best-effort restore outside the normal Quit path: logoff, shutdown, a dispatcher
+        // exception, or the process being torn down with a break still dimming.
+        desktop.ShutdownRequested += (_, _) => RemoveDim();
+        AppDomain.CurrentDomain.ProcessExit += (_, _) => RemoveDim();
+        Dispatcher.UIThread.UnhandledException += (_, _) => RemoveDim();
+
         _tick = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
         _tick.Tick += (_, _) => OnTick();
         _tick.Start();
@@ -139,7 +145,7 @@ public sealed class App : Application
 
     private void ApplyDim()
     {
-        if (_settings.NeverDimWhileLocked && IsSessionLocked())
+        if (IsSessionLocked())
         {
             // Locked: skip this break's dim entirely rather than flipping the screen dark
             // while nobody is looking (and then back, mid-lock).
@@ -148,7 +154,9 @@ public sealed class App : Application
 
         try
         {
-            _dimSnapshot = _backend.Snapshot();
+            // Keep the FIRST snapshot: a second "Break now" during a break must not
+            // capture the already-dimmed values as the thing to restore to.
+            _dimSnapshot ??= _backend.Snapshot();
             var displays = _backend.GetDisplays();
             var depth = Math.Max(1, _settings.DimDepth);
             foreach (var display in displays.Where(d => d.Supported))
@@ -180,29 +188,35 @@ public sealed class App : Application
         }
     }
 
-    // Windows exposes this through the input desktop; on other platforms the lock is
-    // tracked manually from the tray menu.
-    private bool _manualLock;
+    // The engine is the single source of truth: "locked" is engine state, so a settings
+    // rebuild cannot leave a tray menu that says Lock on an engine free to dim.
+    // Session-lock detection (the OS lock screen) is not implemented yet: see TODO.md.
+    private bool IsSessionLocked() => _engine.State == SessionState.Locked;
 
-    private bool IsSessionLocked() => _manualLock;
-
-    private void ToggleLock()
+    public void ToggleLock()
     {
-        _manualLock = !_manualLock;
-        if (_manualLock)
+        try
         {
-            _engine.Lock();
+            if (IsSessionLocked())
+            {
+                _engine.Unlock();
+            }
+            else
+            {
+                _engine.Lock();
+            }
         }
-        else
+        catch (InvalidOperationException)
         {
-            _engine.Unlock();
+            // A raced rebuild between the check and the call: never let a menu click
+            // take the tray app down.
         }
     }
 
     public void StartBreakNow()
     {
         _engine.ForceBreak();
-        _wasDimmed = false;
+        _wasDimmed = _engine.IsDimmed;
     }
 
     public void ApplySettings(AppSettings settings)
@@ -222,7 +236,11 @@ public sealed class App : Application
         var state = _engine.State;
         var phase = _engine.Phase;
         _engine = new BreakEngine(BuildProtocol(), _settings.DimDepth, new SystemClock());
-        if (state == SessionState.Paused)
+        if (state == SessionState.Locked)
+        {
+            _engine.Lock();
+        }
+        else if (state == SessionState.Paused)
         {
             _engine.Pause();
         }

@@ -24,7 +24,6 @@ public sealed class FlyoutWindow : Window
     private readonly TextBox _breakSeconds = new() { Width = 56 };
     private readonly CheckBox _showTimer = new() { Content = "Show timer (tray only)" };
     private readonly CheckBox _startWithWindows = new() { Content = "Start with Windows" };
-    private readonly CheckBox _neverDim = new() { Content = "Never dim while locked" };
     private readonly TextBlock _status = new() { Text = "—", Opacity = 0.75, FontSize = 12 };
     private readonly TextBlock _brightnessValue = new() { Text = "—", Width = 44, TextAlignment = TextAlignment.Right };
     private readonly DispatcherTimer _debounce = new() { Interval = TimeSpan.FromMilliseconds(180) };
@@ -88,7 +87,6 @@ public sealed class FlyoutWindow : Window
 
         root.Children.Add(_showTimer);
         root.Children.Add(_startWithWindows);
-        root.Children.Add(_neverDim);
 
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, HorizontalAlignment = HorizontalAlignment.Right };
         var breakNow = new Button { Content = "Break now" };
@@ -155,7 +153,6 @@ public sealed class FlyoutWindow : Window
             Persist();
         };
         _startWithWindows.IsCheckedChanged += (_, _) => Persist();
-        _neverDim.IsCheckedChanged += (_, _) => Persist();
         _workMinutes.LostFocus += (_, _) => Persist();
         _breakSeconds.LostFocus += (_, _) => Persist();
 
@@ -192,7 +189,6 @@ public sealed class FlyoutWindow : Window
             _showTimer.IsChecked = settings.ShowTimer;
             _startWithWindows.IsChecked = settings.StartWithWindows && Autostart.IsSupported;
             _startWithWindows.IsEnabled = Autostart.IsSupported;
-            _neverDim.IsChecked = settings.NeverDimWhileLocked;
 
             var custom = _protocol.SelectedIndex == 3;
             _workMinutes.IsEnabled = custom;
@@ -218,7 +214,6 @@ public sealed class FlyoutWindow : Window
             DimDepth = (int)Math.Round(_dimDepth.Value),
             ShowTimer = _showTimer.IsChecked == true,
             StartWithWindows = _startWithWindows.IsChecked == true,
-            NeverDimWhileLocked = _neverDim.IsChecked != false,
         };
 
         _app.ApplySettings(settings);
@@ -236,7 +231,10 @@ public sealed class FlyoutWindow : Window
         var area = screen.WorkingArea;
         var scaling = screen.Scaling <= 0 ? 1.0 : screen.Scaling;
         var width = (int)Math.Round(340 * scaling);
-        var height = (int)Math.Round(Math.Max(1, Bounds.Height) * scaling);
+        // Bounds.Height is 0 until the first layout pass; fall back to a sane estimate so
+        // the flyout is never placed off the bottom of the screen on first open.
+        var logicalHeight = Bounds.Height >= 1 ? Bounds.Height : 340;
+        var height = (int)Math.Round(logicalHeight * scaling);
         var x = area.X + area.Width - width - (int)Math.Round(12 * scaling);
         var y = area.Y + area.Height - height - (int)Math.Round(12 * scaling);
         Position = new PixelPoint(x, y);
