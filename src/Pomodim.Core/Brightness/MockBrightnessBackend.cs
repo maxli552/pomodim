@@ -37,13 +37,20 @@ public sealed class MockBrightnessBackend : IBrightnessBackend
     private readonly List<Display> _displays;
     private readonly List<SetCall> _calls = [];
 
+    private readonly string _name;
+
     public MockBrightnessBackend()
-        : this(DefaultDisplays())
+        : this(DefaultDisplays(), "mock")
     {
     }
 
-    public MockBrightnessBackend(IEnumerable<MockDisplaySpec> displays)
+    /// <param name="name">
+    /// Command-line name of this backend instance. Defaults to "mock"; a second
+    /// instance in the same registry (e.g. "mock-unsupported") needs a distinct name.
+    /// </param>
+    public MockBrightnessBackend(IEnumerable<MockDisplaySpec> displays, string name = "mock")
     {
+        _name = name;
         _displays = displays
             .Select(d => new Display
             {
@@ -58,7 +65,7 @@ public sealed class MockBrightnessBackend : IBrightnessBackend
             .ToList();
     }
 
-    public string Name => "mock";
+    public string Name => _name;
 
     /// <summary>Every brightness write since construction, in order.</summary>
     public IReadOnlyList<SetCall> Calls => _calls.AsReadOnly();
@@ -71,6 +78,22 @@ public sealed class MockBrightnessBackend : IBrightnessBackend
         new MockDisplaySpec(
             "mock-3",
             "Mock Display 3",
+            0,
+            100,
+            0,
+            Supported: false,
+            Reason: "no backlight control (mock display without DDC/CI)"),
+    ];
+
+    /// <summary>
+    /// A display set with no controllable displays, for exercising the
+    /// "nothing to dim" path (exit 3) end to end.
+    /// </summary>
+    public static IReadOnlyList<MockDisplaySpec> UnsupportedOnlyDisplays() =>
+    [
+        new MockDisplaySpec(
+            "mock-unsupported-1",
+            "Mock Display (unsupported)",
             0,
             100,
             0,

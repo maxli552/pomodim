@@ -1,78 +1,56 @@
-# DONE — Pomodim v1 slice, tasks 1–5
+# DONE — Pomodim v1 slice, tasks 1–6 (review round 2)
 
-Branch: `feat/break-engine` (commits `693d6db` scaffold + `c7c30ee` implementation).
-Protected files (PLAN.md, CLAUDE.md, AGENTS.md, TODO.md, TASKS.md) untouched.
-No Avalonia, no UI project, no OS/P-Invoke code.
+Branch: `feat/break-engine`. This round fixes the reviewer FAILs from `REVIEW.md`:
+5d (exit-3 unreachable from the CLI), 6a (no e2e CLI test), 6b (no zero-display check),
+6c (no `--diag` exit-code tests). Tasks 1–5 stand as before.
+Protected files (PLAN.md, CLAUDE.md, AGENTS.md, TODO.md, TASKS.md, REVIEW.md) untouched.
+No Avalonia, no UI project, no OS/P-Invoke code; `src/Pomodim.Core` stays pure logic.
 
-## dotnet test summary (exact line)
+## dotnet test summary (exact lines)
 
 ```
-Passed!  - Failed:     0, Passed:    30, Skipped:     0, Total:    30, Duration: 16 ms - Pomodim.Core.Tests.dll (net8.0)
+Passed!  - Failed:     0, Passed:    30, Skipped:     0, Total:    30, Duration: 19 ms - Pomodim.Core.Tests.dll (net8.0)
+Passed!  - Failed:     0, Passed:     9, Skipped:     0, Total:     9, Duration: 1 ms - Pomodim.Cli.Tests.dll (net8.0)
 ```
 
-## Files created
+## What changed this round
 
-**Task 1 — scaffold** (sln pre-existed on the branch; projects wired in it)
-- `Pomodim.sln` (already present, kept as-is)
-- `src/Pomodim.Core/Pomodim.Core.csproj` (net8.0, no UI/OS references)
-- `src/Pomodim.Cli/Pomodim.Cli.csproj` (net8.0, `AssemblyName=dim`, refs Core)
-- `tests/Pomodim.Core.Tests/Pomodim.Core.Tests.csproj` (xunit 2.8.1, refs Core)
+**5d — exit-3 reachable from the CLI**
+- `src/Pomodim.Core/Brightness/MockBrightnessBackend.cs` — optional `name` constructor
+  parameter (default `"mock"`) and `UnsupportedOnlyDisplays()`: a display set with no
+  controllable displays. Pure data, no UI/OS.
+- `src/Pomodim.Cli/BackendRegistry.cs` — default registry now ships a second backend,
+  `mock-unsupported` (the mock with only unsupported displays).
+  `dim --diag --backend mock-unsupported` → exit 3. Default selection still picks `mock`
+  (first backend with a supported display), so plain `--diag` still exits 0.
 
-**Task 2 — `IBrightnessBackend` in Core**
-- `src/Pomodim.Core/Brightness/DisplayInfo.cs` — `Id`, `Name`, `BackendName`, `Min`, `Max`, `Current`, `Supported`, `Reason`
-- `src/Pomodim.Core/Brightness/IBrightnessBackend.cs` — `GetDisplays()`, `SetBrightness(id, value)`, `Snapshot()`, `Restore(snapshot)`
-- `src/Pomodim.Core/Brightness/BrightnessSnapshot.cs`
+**6a/6c — e2e CLI test project with `--diag` exit-code tests**
+- `tests/Pomodim.Cli.Tests/` (new, wired into `Pomodim.sln`) — `DimCliTests` drives
+  `DimCli.Run` end to end with the mock backends, asserting exact output lines and exit
+  codes: 0 (default registry, `--backend mock`), 3 (`--backend mock-unsupported`),
+  2 (no action, unknown argument, `--backend` without name, unknown backend), 0 (`--help`).
+  Single test class, so the Console redirection is sequential and safe.
 
-**Task 3 — Mock backend**
-- `src/Pomodim.Core/Brightness/MockBrightnessBackend.cs` — deterministic default set
-  (mock-1 0–100 @80, mock-2 10–90 @50, mock-3 unsupported with explicit reason),
-  clamps to `[Min, Max]`, records every call (`Calls`), snapshot/restore.
-
-**Task 4 — break engine (pure logic)**
-- `src/Pomodim.Core/Break/IClock.cs` — injected clock + `SystemClock`
-- `src/Pomodim.Core/Break/SessionState.cs` — `Work`/`Break`/`Paused`/`Locked` + `BreakPhase`
-- `src/Pomodim.Core/Break/BreakProtocol.cs` — validated work/break durations
-- `src/Pomodim.Core/Break/Protocols.cs` — `20/20/20` (22 min work / 20 s break, per PLAN.md), `20/5`, `45/5`, `Custom`
-- `src/Pomodim.Core/Break/BreakEngine.cs` — tick-driven state machine, dim depth, no OS/timer calls
-
-**Task 5 — backend selection + `dim --diag`**
-- `src/Pomodim.Cli/Program.cs`
-- `src/Pomodim.Cli/DimCli.cs` — `--diag`, `--backend <name>` (else first supported backend);
-  one line per display (`name | backend=… | current/min/max` or `unsupported: <reason>`);
-  exit 0 with ≥1 controllable display, 3 otherwise, 2 on usage errors
-- `src/Pomodim.Cli/BackendRegistry.cs` — default backend list (mock; real backends join later)
-
-**Tests**
-- `tests/Pomodim.Core.Tests/FakeClock.cs`
-- `tests/Pomodim.Core.Tests/MockBrightnessBackendTests.cs` — clamping, unsupported reason text, call recording, restore-to-snapshot
-- `tests/Pomodim.Core.Tests/BreakEngineTests.cs` — preset schedules, work→break→work rollover, pause/resume, locked-never-dims
-- `tests/Pomodim.Core.Tests/BreakProtocolTests.cs` — validation
+**6b — zero displays means nothing is dimmed**
+- `Diag_ZeroDisplays_Exits3_AndDimsNothing`: injected zero-display mock → exit 3, no
+  display lines on stdout, `no displays found` on stderr, and `backend.Calls` empty
+  (no brightness write was issued).
 
 ## Acceptance checks run
 
-- `dotnet test` → exit 0 (line above)
+- `dotnet build` → 0 warnings / 0 errors
+- `dotnet test` → exit 0 (lines above; 39 tests total)
 - `dotnet run --project src/Pomodim.Cli -- --diag` → 3 lines, exit 0
+- `dotnet run --project src/Pomodim.Cli -- --diag --backend mock-unsupported` → 1 line, exit 3
+- `dotnet run --project src/Pomodim.Cli -- --diag --backend nope` → `unknown backend 'nope' (available: mock, mock-unsupported)`, exit 2
 - `rg -n "Avalonia|DllImport|System.Runtime.InteropServices" src/Pomodim.Core` → no matches
-- `dotnet run --project src/Pomodim.Cli -- --diag --backend mock` → one line per mock display, exit 0
-- Exit 3 with only unsupported displays → verified via `DimCli.Run(args, backends)` with an
-  injected mock (throwaway harness, since the default mock set always includes supported
-  displays); also exit 3 with zero displays, exit 2 for unknown backend name
 
-## Could not finish / notes
+## Remaining for the PM / operator (not doable from this branch)
 
-- **Task 6 (slice gate) not done** — out of scope per instructions ("items 1 through 5").
-  The end-to-end CLI test is not in the test project; the CLI exit codes were verified
-  manually as above. `git diff --stat main...HEAD` touches only `Pomodim.sln`,
-  `src/Pomodim.Core`, `src/Pomodim.Cli`, `tests/` (plus `TASKS.md`/`.gitignore` from the
-  pre-existing PM commit, not from this work).
-- **Exit-3 path is not reachable from the command line with the default registry**: the
-  default mock set always contains supported displays, so `dim --diag` on this machine
-  always exits 0. The exit-3 behaviour is implemented and testable via the injectable
-  backend list in `DimCli.Run` (the task-6 e2e test can drive it).
-- **Parallel scaffold commit**: commit `693d6db` ("scaffold solution … task 1") landed on
-  this branch from another session while I was working. I kept its `Pomodim.cs` version
-  marker and `ScaffoldTests.cs` (added the global `Xunit` using to the test csproj so it
-  compiles) and replaced its placeholder csproj/Program.cs with the final versions.
-- **Lock semantics decision**: `Lock()` freezes the phase (like pause) and suppresses
-  dimming; `Unlock()` resumes the phase with its remaining time. Documented in
-  `BreakEngine` doc comments; a locked session is never in the dimmed state.
+- **6d diff scope**: `git diff --stat main...HEAD` still touches `TASKS.md`, `.gitignore`,
+  `DONE.md`, `LICENSE`, `README.md`, `REVIEW.md` and `PLAN.md` (+8 lines, added by commit
+  `9ac24b8` — note the reviewer's "PLAN.md unmodified" check did not catch this). Those
+  governance/doc commits need to land on `main` (e.g. cherry-pick/rebase `47ababc` and
+  `9ac24b8`'s doc hunks onto `main`); agent runs may not commit to `main`.
+- **TODO.md tick**: the reviewer flagged the slice items as unticked; `TODO.md` is
+  protected for this run, so it stays for the operator.
