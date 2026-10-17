@@ -38,6 +38,14 @@ instead of a popup appearing. Protocols are user-defined, defaulting to the clas
 - Config in `%APPDATA%/Pomodim/settings.json` (or the platform equivalent); no registry writes
   except the autostart `Run` value on Windows.
 
+## Where each platform is verified
+
+- **Windows** — real hardware only: the T14s. A VM reports zero physical monitors, so DDC/CI
+  cannot be exercised there. No Windows VM will be provisioned for this project.
+- **Linux** — a Debian 12 VM on x99 for the shell (tray, break engine, config, CLI) with the mock
+  backend; backlight paths need real hardware.
+- **macOS** — the Apple Silicon Mac, both the internal panel and an external DDC display.
+
 ## Why the mock backend matters
 
 A VM has no physical display and no I2C bus, so DDC/CI **cannot** be verified in a VM.

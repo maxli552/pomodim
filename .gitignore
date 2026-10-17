@@ -12,6 +12,11 @@
 !tests/**
 !.gitignore
 !*.sln
+!README.md
+!LICENSE
+!TASKS.md
+!REVIEW.md
+!DONE.md
 
 # build output
 bin/
