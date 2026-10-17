@@ -1,4 +1,6 @@
-using Pomodim.Core;
+namespace Pomodim.Cli;
 
-Console.WriteLine($"Pomodim {Pomodim.Core.Pomodim.Version} (scaffold)");
-return 0;
+internal static class Program
+{
+    private static int Main(string[] args) => DimCli.Run(args);
+}
