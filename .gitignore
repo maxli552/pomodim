@@ -1,0 +1,31 @@
+# deny-by-default
+*
+!PLAN.md
+!CLAUDE.md
+!AGENTS.md
+!TODO.md
+!README.md
+!src/
+!src/**
+!tests/
+!tests/**
+!.gitignore
+!*.sln
+
+# build output
+bin/
+obj/
+**/bin/
+**/obj/
+*.user
+*.suo
+.vs/
+.idea/
+
+# os noise
+.DS_Store
+Thumbs.db
+
+# secrets / local
+.env
+*.local.json
