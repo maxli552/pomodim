@@ -41,10 +41,21 @@ public class DimCliTests : IDisposable
     private static string[] Lines(string output) =>
         output.Split('\n').Select(l => l.TrimEnd('\r')).Where(l => l.Length > 0).ToArray();
 
+    /// <summary>
+    /// The mock backends, injected explicitly so the diag output tests are
+    /// deterministic on every OS (on Windows the default registry also contains
+    /// the Windows backend, which is the default there).
+    /// </summary>
+    private static IReadOnlyList<IBrightnessBackend> MockBackends() =>
+    [
+        new MockBrightnessBackend(),
+        new MockBrightnessBackend(MockBrightnessBackend.UnsupportedOnlyDisplays(), name: "mock-unsupported"),
+    ];
+
     [Fact]
-    public void Diag_DefaultRegistry_ListsEveryMockDisplay_AndExits0()
+    public void Diag_MockBackends_ListEveryMockDisplay_AndExits0()
     {
-        var (exit, stdout, _) = Run(["--diag"]);
+        var (exit, stdout, _) = Run(["--diag"], MockBackends());
 
         Assert.Equal(DimCli.ExitOk, exit);
         string[] expected =
@@ -54,6 +65,22 @@ public class DimCliTests : IDisposable
             "Mock Display 3 | backend=mock | unsupported: no backlight control (mock display without DDC/CI)",
         ];
         Assert.Equal(expected, Lines(stdout));
+    }
+
+    [Fact]
+    public void Diag_DefaultBackend_IsWindowsOnWindows_AndMockElsewhere()
+    {
+        var (exit, stdout, _) = Run(["--diag"]);
+        if (OperatingSystem.IsWindows())
+        {
+            // The Windows backend is the default; a VM may have no displays (exit 3).
+            Assert.DoesNotContain("backend=mock", stdout);
+        }
+        else
+        {
+            Assert.Equal(DimCli.ExitOk, exit);
+            Assert.Contains("backend=mock", stdout);
+        }
     }
 
     [Fact]

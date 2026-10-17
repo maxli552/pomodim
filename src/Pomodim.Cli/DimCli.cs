@@ -93,8 +93,16 @@ public static class DimCli
             return match;
         }
 
-        // No explicit name: the first backend that can control at least one display,
-        // else the first backend so its unsupported displays are still listed.
+        // No explicit name: on Windows the default is the Windows backend (it is
+        // registered only on Windows); elsewhere the first backend that can
+        // control at least one display, else the first backend so its unsupported
+        // displays are still listed.
+        if (OperatingSystem.IsWindows())
+        {
+            var windows = backends.FirstOrDefault(b => b.Name == "windows");
+            if (windows is not null)
+                return windows;
+        }
         return backends.FirstOrDefault(b => b.GetDisplays().Any(d => d.Supported)) ?? backends[0];
     }
 

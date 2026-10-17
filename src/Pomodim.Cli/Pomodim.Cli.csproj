@@ -12,6 +12,7 @@
 
   <ItemGroup>
     <ProjectReference Include="../Pomodim.Core/Pomodim.Core.csproj" />
+    <ProjectReference Include="../Pomodim.Backends.Windows/Pomodim.Backends.Windows.csproj" />
   </ItemGroup>
 
 </Project>
