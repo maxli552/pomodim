@@ -1,136 +1,169 @@
-using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
+using Pomodim.Core.Brightness;
 
 namespace Pomodim.Backends.Windows;
 
 /// <summary>
-/// The real DDC/CI seam. Enumerates the HMONITORs with user32
-/// <c>EnumDisplayMonitors</c>, gets the per-monitor handles with Dxva2
-/// <c>GetPhysicalMonitorsFromHMONITOR</c>, reads brightness with
-/// <c>GetVCPFeatureAndVCPFeatureReply</c> (VCP code 0x10), writes with
-/// <c>SetVCPFeature</c>, and releases the handles with
-/// <c>DestroyPhysicalMonitors</c>.
+/// The real DDC/CI seam: <see cref="IDxva2Native"/> behind the display-level
+/// <see cref="IMonitorApi"/> the backend uses. It owns every physical-monitor handle it
+/// acquires: a handle is released only when its monitor disappears or when the seam is
+/// disposed, so a handle the backend was handed never dies while a write can still use it.
+///
+/// Displays are identified by the monitor's <c>szDevice</c> name, not by the handle:
+/// handles change between enumerations, device names do not.
 /// </summary>
 [SupportedOSPlatform("windows")]
 internal sealed class WindowsMonitorApi : IMonitorApi
 {
-    private const uint VcpBrightness = 0x10;
+    private sealed record HeldMonitor(
+        IntPtr HMonitor,
+        IntPtr Handle,
+        string Device,
+        string Description,
+        string Id);
 
+    private readonly IDxva2Native _native;
+    private readonly List<HeldMonitor> _held = [];
+    private bool _disposed;
+
+    public WindowsMonitorApi()
+        : this(new Dxva2Native())
+    {
+    }
+
+    internal WindowsMonitorApi(IDxva2Native native)
+    {
+        _native = native ?? throw new ArgumentNullException(nameof(native));
+    }
+
+    /// <summary>
+    /// Reads every monitor's current brightness. Re-enumerates the HMONITORs so a
+    /// hot-plugged display is picked up, but reuses the held handles of monitors that
+    /// are still present (never destroys a handle that is still exposed).
+    /// </summary>
     public IReadOnlyList<PhysicalMonitor> GetDisplays()
     {
-        if (!OperatingSystem.IsWindows())
-            return []; // Dxva2/user32 do not exist off-Windows; nothing to enumerate
-        var result = new List<PhysicalMonitor>();
-        var callback = new MonitorEnumProc((IntPtr hMonitor, IntPtr hdcScreen, ref RECT rect, IntPtr data) =>
-        {
-            AddMonitors(result, hMonitor);
-            return true;
-        });
-        EnumDisplayMonitors(IntPtr.Zero, IntPtr.Zero, callback, IntPtr.Zero);
-        return result;
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        Sync();
+        return _held.Select(Describe).ToList();
     }
 
+    /// <summary>Writes VCP 0x10 on one monitor. A failed write throws with the Win32 error.</summary>
     public void SetVcpBrightness(IntPtr handle, int value)
     {
-        if (!OperatingSystem.IsWindows())
-            throw new PlatformNotSupportedException("DDC/CI (Dxva2) is only available on Windows.");
-        var status = SetVCPFeature(handle, VcpBrightness, (uint)value);
-        if (status != 0)
-            throw new IOException($"SetVCPFeature (VCP 0x10) failed with status 0x{status:x8}.");
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (value < 0)
+            throw new ArgumentOutOfRangeException(nameof(value), value, "Brightness must not be negative.");
+        if (!_held.Any(h => h.Handle == handle))
+            throw new ArgumentException($"Unknown physical monitor handle 0x{handle:x}.", nameof(handle));
+
+        if (!_native.SetVcpFeature(handle, VcpBrightness.Code, (uint)value, out var error))
+            throw new IOException($"SetVCPFeature (VCP 0x10) failed: {VcpBrightness.DescribeWin32Error(error)}.");
     }
 
-    private static void AddMonitors(List<PhysicalMonitor> result, IntPtr hMonitor)
+    public void Dispose()
     {
-        if (GetPhysicalMonitorsFromHMONITOR(hMonitor, 0, IntPtr.Zero, out var count) != 0 || count == 0)
+        if (_disposed)
             return;
+        _disposed = true;
+        if (_held.Count > 0)
+            _native.DestroyPhysicalMonitors(_held.Select(h => h.Handle).ToList());
+        _held.Clear();
+    }
 
-        var monitors = new PHYSICAL_MONITOR[count];
-        try
+    /// <summary>
+    /// Brings the held handle list in line with the HMONITORs that exist right now:
+    /// acquire handles for monitors not held yet, release handles of monitors that
+    /// disappeared. Handles of monitors present in both passes are left untouched.
+    /// </summary>
+    private void Sync()
+    {
+        var seen = new HashSet<IntPtr>();
+        var position = 0;
+        foreach (var monitor in _native.EnumMonitors())
         {
-            if (GetPhysicalMonitorsFromHMONITOR(hMonitor, (uint)count, ref monitors[0], out count) != 0)
-                return;
-            for (var i = 0; i < count; i++)
-                result.Add(Describe(monitors[i]));
+            if (!seen.Add(monitor.HMonitor))
+                continue;
+            position++;
+            if (_held.Any(h => h.HMonitor == monitor.HMonitor))
+                continue;
+
+            var physical = _native.GetPhysicalMonitors(monitor.HMonitor);
+            for (var i = 0; i < physical.Count; i++)
+            {
+                _held.Add(new HeldMonitor(
+                    monitor.HMonitor,
+                    physical[i].Handle,
+                    monitor.Device,
+                    physical[i].Description,
+                    IdFor(monitor.Device, position, i)));
+            }
         }
-        finally
+
+        for (var i = _held.Count - 1; i >= 0; i--)
         {
-            DestroyPhysicalMonitors((uint)count, ref monitors[0]);
+            if (seen.Contains(_held[i].HMonitor))
+                continue;
+            _native.DestroyPhysicalMonitors([_held[i].Handle]);
+            _held.RemoveAt(i);
         }
     }
 
-    private static PhysicalMonitor Describe(PHYSICAL_MONITOR monitor)
+    private PhysicalMonitor Describe(HeldMonitor held)
     {
-        var name = string.IsNullOrWhiteSpace(monitor.MonitorInfo.szDescription)
-            ? monitor.MonitorInfo.szDevice
-            : monitor.MonitorInfo.szDescription;
-
-        var status = GetVCPFeatureAndVCPFeatureReply(
-            monitor.hPhysicalMonitor, VcpBrightness, out _, out var max, out var current);
-        if (status == 0)
-            return new PhysicalMonitor(monitor.hPhysicalMonitor, name, 0, (int)max, (int)current, true, null);
-
-        // GetVCPFeatureAndVCPFeatureReply: 1 = feature not supported by the monitor,
-        // 2 = the monitor does not support VCP at all, anything else = error.
-        var reason = status switch
-        {
-            1 => "monitor does not support the VCP brightness feature (0x10)",
-            2 => "monitor does not support DDC/CI (no VCP)",
-            _ => $"GetVCPFeatureAndVCPFeatureReply failed (status 0x{status:x8})",
-        };
-        return new PhysicalMonitor(monitor.hPhysicalMonitor, name, 0, 100, 0, false, reason);
+        var reading = ReadVcp(held.Handle);
+        return new PhysicalMonitor(
+            held.Id,
+            held.Handle,
+            DisplayName(held),
+            reading.Min,
+            reading.Max,
+            reading.Current,
+            reading.Supported,
+            reading.Reason);
     }
 
-    [StructLayout(LayoutKind.Sequential)]
-    private struct RECT
+    /// <summary>
+    /// Reads VCP 0x10, retrying a failed capability read once: DDC/CI reads over I2C
+    /// fail intermittently, and one retry removes most of the false "unsupported".
+    /// </summary>
+    private VcpReading ReadVcp(IntPtr handle)
     {
-        public int Left;
-        public int Top;
-        public int Right;
-        public int Bottom;
+        var reply = _native.GetVcpFeature(handle, VcpBrightness.Code);
+        if (!reply.Succeeded)
+            reply = _native.GetVcpFeature(handle, VcpBrightness.Code);
+
+        return reply.Succeeded
+            ? VcpBrightness.Interpret(true, reply.CodeType, reply.Current, reply.Max, null)
+            : VcpBrightness.Interpret(false, reply.CodeType, reply.Current, reply.Max, reply.LastError);
     }
 
-    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-    private struct MONITORINFOEX
+    private static string DisplayName(HeldMonitor held)
     {
-        public int cbSize;
-        public RECT rcMonitor;
-        public RECT rcWork;
-        public uint dwFlags;
-        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)]
-        public string szDevice;
-        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)]
-        public string szDescription;
-        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)]
-        public string szProduct;
+        if (!string.IsNullOrWhiteSpace(held.Description))
+            return held.Description;
+        return string.IsNullOrWhiteSpace(held.Device) ? "unknown display" : held.Device;
     }
 
-    [StructLayout(LayoutKind.Sequential)]
-    private struct PHYSICAL_MONITOR
+    /// <summary>
+    /// A stable display id from <c>szDevice</c> ("\\.\DISPLAY1" → "ddc-display1").
+    /// The handle is deliberately not part of the id: it changes between enumerations.
+    /// When the device name is missing, fall back to the enumeration position.
+    /// </summary>
+    private static string IdFor(string device, int monitorPosition, int physicalIndex)
     {
-        public IntPtr hPhysicalMonitor;
-        public MONITORINFOEX MonitorInfo;
+        var name = DeviceNameOf(device);
+        if (name is null)
+            return physicalIndex == 0 ? $"ddc-{monitorPosition}" : $"ddc-{monitorPosition}-{physicalIndex + 1}";
+        return physicalIndex == 0 ? $"ddc-{name}" : $"ddc-{name}-{physicalIndex + 1}";
     }
 
-    private delegate bool MonitorEnumProc(IntPtr hMonitor, IntPtr hdcScreen, ref RECT lprcMonitor, IntPtr dwData);
-
-    [DllImport("user32.dll", EntryPoint = "EnumDisplayMonitors", SetLastError = true)]
-    private static extern bool EnumDisplayMonitors(IntPtr hdc, IntPtr lprcClip, MonitorEnumProc lpfnEnum, IntPtr dwData);
-
-    [DllImport("Dxva2.dll", EntryPoint = "GetPhysicalMonitorsFromHMONITOR", SetLastError = true)]
-    private static extern int GetPhysicalMonitorsFromHMONITOR(
-        IntPtr hMonitor, uint dwArraySize, IntPtr lpPhysicalMonitorArray, out uint pdwPhysicalMonitorCount);
-
-    [DllImport("Dxva2.dll", EntryPoint = "GetPhysicalMonitorsFromHMONITOR", SetLastError = true)]
-    private static extern int GetPhysicalMonitorsFromHMONITOR(
-        IntPtr hMonitor, uint dwArraySize, ref PHYSICAL_MONITOR lpPhysicalMonitorArray, out uint pdwPhysicalMonitorCount);
-
-    [DllImport("Dxva2.dll", EntryPoint = "GetVCPFeatureAndVCPFeatureReply", SetLastError = true)]
-    private static extern int GetVCPFeatureAndVCPFeatureReply(
-        IntPtr hMonitor, uint dwVcpFeature, out uint pdwVcpFeatureVersion, out uint pdwVcpFeatureMaxValue, out uint pdwVcpVcpFeatureValue);
-
-    [DllImport("Dxva2.dll", EntryPoint = "SetVCPFeature", SetLastError = true)]
-    private static extern int SetVCPFeature(IntPtr hMonitor, uint dwVcpFeature, uint dwVcpFeatureValue);
-
-    [DllImport("Dxva2.dll", EntryPoint = "DestroyPhysicalMonitors", SetLastError = true)]
-    private static extern int DestroyPhysicalMonitors(uint dwPhysicalMonitorArraySize, ref PHYSICAL_MONITOR lpPhysicalMonitorArray);
+    private static string? DeviceNameOf(string device)
+    {
+        var trimmed = device.Trim();
+        if (trimmed.Length == 0)
+            return null;
+        var last = trimmed.Split('\\', StringSplitOptions.RemoveEmptyEntries).LastOrDefault();
+        return string.IsNullOrWhiteSpace(last) ? null : last.ToLowerInvariant();
+    }
 }
