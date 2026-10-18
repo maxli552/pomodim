@@ -139,9 +139,12 @@ internal sealed class Dxva2Native : IDxva2Native
         DestroyPhysicalMonitors((uint)monitors.Length, monitors);
     }
 
+    /// <summary>sizeof(MONITORINFOEXW) in the SDK: 104 bytes. Pinned by a test.</summary>
+    internal static int MonitorInfoExSize => Marshal.SizeOf<MONITORINFOEX>();
+
     private static string DeviceName(IntPtr hMonitor)
     {
-        var info = new MONITORINFOEX { cbSize = (uint)Marshal.SizeOf<MONITORINFOEX>() };
+        var info = new MONITORINFOEX { cbSize = (uint)MonitorInfoExSize };
         if (!GetMonitorInfo(hMonitor, ref info))
             return string.Empty;
         return info.szDevice ?? string.Empty;
@@ -166,14 +169,14 @@ internal sealed class Dxva2Native : IDxva2Native
 
         [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)]
         public string szDevice;
-
-        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)]
-        public string szDescription;
-
-        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)]
-        public string szProduct;
     }
 
+    /// <summary>
+    /// <c>MONITORINFOEXW</c> is exactly: cbSize, rcMonitor, rcWork, dwFlags, szDevice[32].
+    /// Extra fields here would inflate <c>Marshal.SizeOf</c>, and <c>GetMonitorInfo</c>
+    /// rejects a cbSize that is not sizeof(MONITORINFOEXW) — which silently costs the
+    /// stable <c>szDevice</c> id on real hardware.
+    /// </summary>
     /// <summary>
     /// The SDK's <c>PHYSICAL_MONITOR</c>: a handle and a 128-character description.
     /// (Not <c>MONITORINFOEX</c> — that is what <c>GetMonitorInfo</c> fills.)

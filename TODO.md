@@ -8,7 +8,8 @@ Protocol: work the top unchecked item, mark it done in the same commit.
 - [x] `IBrightnessBackend` + `Mock` backend with unit tests
 - [x] `WindowsDdc` backend (Dxva2 P/Invoke + WMI fallback) with `--diag`
 - [x] Break engine (pure logic, fake clock) + tests for 20/20/20, 20/5, 45/5, custom
-- [x] CLI: `--diag`, `--set`, `--display`, `--break now`
+- [x] CLI: `--diag`, `--backend`
+- [ ] CLI: `--set`, `--display`, `--break now` (not implemented yet — the tick that used to claim these was wrong)
 - [x] Tray icon + flyout + slider (Avalonia)
 - [x] Break dimming with guaranteed restore (exit + signal)
 - [x] Optional tray-only timer text
